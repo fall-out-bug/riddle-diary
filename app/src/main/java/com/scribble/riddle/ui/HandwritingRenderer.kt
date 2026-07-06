@@ -22,28 +22,28 @@ fun DrawScope.renderAnimated(
     val total = paths.size
     val argb = inkColor.toArgb()
     val fillPaint = android.graphics.Paint().apply {
-        isAntiAlias = true
-        color = argb
-        style = android.graphics.Paint.Style.FILL
+        isAntiAlias = true; color = argb; style = android.graphics.Paint.Style.FILL
     }
     val wetPaint = android.graphics.Paint().apply {
-        isAntiAlias = true
-        color = argb
-        alpha = 70
+        isAntiAlias = true; color = argb; alpha = 88
         style = android.graphics.Paint.Style.STROKE
         strokeCap = android.graphics.Paint.Cap.ROUND
         strokeJoin = android.graphics.Paint.Join.ROUND
-        strokeWidth = 10f
+        strokeWidth = 13f
     }
     val blotPaint = android.graphics.Paint().apply {
-        isAntiAlias = true
-        color = argb
-        alpha = 235
+        isAntiAlias = true; color = argb; alpha = 235
         style = android.graphics.Paint.Style.FILL
     }
+    val dripPaint = android.graphics.Paint().apply {
+        isAntiAlias = true; color = argb; alpha = 150
+        style = android.graphics.Paint.Style.STROKE
+        strokeCap = android.graphics.Paint.Cap.ROUND
+        strokeWidth = 2.5f
+    }
     val bounds = RectF()
-    val tanOut = FloatArray(2)
     val posOut = FloatArray(2)
+    val tanOut = FloatArray(2)
 
     drawIntoCanvas { canvas ->
         paths.forEachIndexed { index, path ->
@@ -60,14 +60,17 @@ fun DrawScope.renderAnimated(
             nc.drawPath(path, fillPaint)
             nc.restore()
 
-            // nib blot riding the reveal front
             if (local < 1f) {
                 val pm = PathMeasure(path, false)
-                val cy = bounds.centerY()
                 if (pm.getPosTan((revealRight - bounds.left).coerceIn(0f, pm.length), posOut, tanOut)) {
-                    nc.drawCircle(posOut[0], posOut[1], 5.5f, blotPaint)
-                } else {
-                    nc.drawCircle(revealRight, cy, 5.5f, blotPaint)
+                    val tipR = 6.5f + if (local > 0.8f) 2.5f else 0f
+                    nc.drawCircle(posOut[0], posOut[1], tipR, blotPaint)
+                    // occasional drip downward from the wet nib (stable per glyph)
+                    if (index % 5 == 2) {
+                        val dripLen = 10f + (index % 4) * 4f
+                        nc.drawLine(posOut[0], posOut[1], posOut[0] + 1f, posOut[1] + dripLen, dripPaint)
+                        nc.drawCircle(posOut[0] + 1f, posOut[1] + dripLen, 2.2f, blotPaint)
+                    }
                 }
             }
             // pen-down puddle at glyph start

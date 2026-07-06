@@ -32,6 +32,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
@@ -40,6 +41,11 @@ import com.scribble.riddle.llm.Config
 import com.scribble.riddle.llm.LlmProvider
 import com.scribble.riddle.llm.Secrets
 import com.scribble.riddle.ocr.InkRecognizer
+import com.scribble.riddle.persistence.DiaryStore
+import com.scribble.riddle.persistence.StoredDiary
+import com.scribble.riddle.persistence.StoredPoint
+import com.scribble.riddle.persistence.StoredStroke
+import com.scribble.riddle.persistence.StoredTurn
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -84,6 +90,8 @@ fun DiaryScreen(
     val dateStr = remember {
         java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale("ru")).format(java.util.Date()) + " г."
     }
+    val context = LocalContext.current
+    val storedTurns = remember { mutableListOf<StoredTurn>() }
 
     val pending = remember { mutableStateListOf<InkStroke>() }
     val allUser = remember { mutableStateListOf<InkStroke>() }
@@ -106,6 +114,19 @@ fun DiaryScreen(
     }
 
     LaunchedEffect(Unit) {
+        val loaded = DiaryStore.load(context)
+        loaded.turns.forEach { t ->
+            val strokes = t.userStrokes.map { InkStroke(it.pts.map { p -> StrokePoint(p.x, p.y, p.t, p.p) }) }
+            allUser.addAll(strokes)
+            if (t.assistantText.isNotEmpty()) {
+                val paths = InkPathFactory(responsePaint).pathsFor(t.assistantText, RESPONSE_ORIGIN_X, t.assistantOriginY)
+                responses.add(ResponseGroup(paths, 1f))
+            }
+            history.add("user" to t.userText)
+            history.add("assistant" to t.assistantText)
+        }
+        storedTurns.addAll(loaded.turns)
+        recomputeHeight()
         while (true) {
             delay(200)
             if (processing || pending.isEmpty() || lastActivityAt == 0L ||
@@ -150,6 +171,15 @@ fun DiaryScreen(
             val paths = InkPathFactory(responsePaint).pathsFor(full, RESPONSE_ORIGIN_X, originY)
             val rg = ResponseGroup(paths, 0f)
             responses.add(rg)
+            storedTurns.add(
+                StoredTurn(
+                    userStrokes = turnStrokes.map { s -> StoredStroke(s.points.map { p -> StoredPoint(p.x, p.y, p.tMs, p.pressure) }) },
+                    userText = text,
+                    assistantText = full,
+                    assistantOriginY = originY,
+                ),
+            )
+            DiaryStore.save(context, StoredDiary(storedTurns.toList()))
             recomputeHeight()
             scope.launch {
                 val n = paths.size.coerceAtLeast(1)
