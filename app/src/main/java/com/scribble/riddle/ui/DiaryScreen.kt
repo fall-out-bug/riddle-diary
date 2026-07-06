@@ -157,15 +157,15 @@ fun DiaryScreen(
                                     val pos = change.position
                                     when {
                                         change.changedToDown() -> {
-                                            curStroke = mutableListOf(StrokePoint(pos.x, pos.y, now))
+                                            curStroke = mutableListOf(StrokePoint(pos.x, pos.y, now, change.pressure))
                                             lastActivityAt = now
                                         }
                                         change.pressed -> {
-                                            curStroke?.add(StrokePoint(pos.x, pos.y, now))
+                                            curStroke?.add(StrokePoint(pos.x, pos.y, now, change.pressure))
                                             lastActivityAt = now
                                         }
                                         change.changedToUp() -> {
-                                            curStroke?.add(StrokePoint(pos.x, pos.y, now))
+                                            curStroke?.add(StrokePoint(pos.x, pos.y, now, change.pressure))
                                             val pts = curStroke
                                             if (pts != null && pts.size >= 2) {
                                                 val stroke = InkStroke(pts.toList())
@@ -186,21 +186,38 @@ fun DiaryScreen(
                 responses.forEach { rg ->
                     renderAnimated(rg.paths, rg.progress, Color(0xFF5A4A2F))
                 }
+                val userInk = Color(0xFF1A1A2E)
                 allUser.forEach { stroke ->
-                    if (stroke.points.size >= 2) {
+                    val pts = stroke.points
+                    if (pts.size >= 2) {
                         drawCircle(
-                            color = Color(0xFF1A1A2E),
+                            color = userInk,
                             radius = 5f,
-                            center = androidx.compose.ui.geometry.Offset(stroke.points[0].x, stroke.points[0].y),
+                            center = androidx.compose.ui.geometry.Offset(pts[0].x, pts[0].y),
                         )
-                        val p = Path()
-                        p.moveTo(stroke.points[0].x, stroke.points[0].y)
-                        for (i in 1 until stroke.points.size) p.lineTo(stroke.points[i].x, stroke.points[i].y)
-                        drawPath(
-                            p,
-                            color = Color(0xFF1A1A2E),
-                            style = Stroke(width = 5f, cap = StrokeCap.Round, join = StrokeJoin.Round),
-                        )
+                        for (i in 0 until pts.size - 1) {
+                            val a = pts[i]
+                            val b = pts[i + 1]
+                            val pa = if (a.pressure > 0f) a.pressure else 0.5f
+                            val pb = if (b.pressure > 0f) b.pressure else 0.5f
+                            val press = ((pa + pb) * 0.5f).coerceIn(0.08f, 1f)
+                            val w = 2.2f + press * 7.5f
+                            val seg = Path()
+                            seg.moveTo(a.x, a.y)
+                            seg.lineTo(b.x, b.y)
+                            drawPath(
+                                seg,
+                                color = userInk,
+                                style = Stroke(width = w, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                            )
+                            if (press > 0.6f && i % 3 == 0) {
+                                drawCircle(
+                                    color = userInk,
+                                    radius = 2f + press * 2.5f,
+                                    center = androidx.compose.ui.geometry.Offset(b.x, b.y),
+                                )
+                            }
+                        }
                     }
                 }
             }
