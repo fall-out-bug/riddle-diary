@@ -216,39 +216,45 @@ fun DiaryScreen(
                     },
             ) {
                 // --- old-planner page background ---
-                drawRect(color = Color(0xFFF1E3C2))
-                val marginX = 140f
+                drawRect(color = Color(0xFFEAD5A6))
+                val marginX = 150f
                 val pageH = 2400f
+                val ruleColor = Color(0xFF9C7E4A)
                 var pageTop = 0f
                 var pageIdx = 0
                 while (pageTop < this.size.height) {
-                    drawIntoCanvas { c ->
-                        c.nativeCanvas.drawText(dateStr, marginX, pageTop + 78f, datePaint)
-                    }
-                    var y = pageTop + 116f
-                    while (y < pageTop + pageH - 70f) {
+                    if (pageIdx > 0) {
+                        drawRect(
+                            color = Color(0xFFD2B578),
+                            topLeft = androidx.compose.ui.geometry.Offset(0f, pageTop - 18f),
+                            size = androidx.compose.ui.geometry.Size(this.size.width, 34f),
+                        )
                         drawLine(
-                            color = Color(0xFFC9B68C),
+                            color = Color(0xFF7A6240),
+                            start = androidx.compose.ui.geometry.Offset(60f, pageTop),
+                            end = androidx.compose.ui.geometry.Offset(this.size.width - 60f, pageTop),
+                            strokeWidth = 1.5f,
+                        )
+                    }
+                    drawIntoCanvas { c ->
+                        c.nativeCanvas.drawText(dateStr, marginX, pageTop + 84f, datePaint)
+                    }
+                    var y = pageTop + 122f
+                    while (y < pageTop + pageH - 80f) {
+                        drawLine(
+                            color = ruleColor,
                             start = androidx.compose.ui.geometry.Offset(marginX, y),
                             end = androidx.compose.ui.geometry.Offset(this.size.width - 70f, y),
-                            strokeWidth = 1.3f,
+                            strokeWidth = 2.0f,
                         )
                         y += 92f
                     }
                     drawLine(
-                        color = Color(0xFFB26A55),
-                        start = androidx.compose.ui.geometry.Offset(marginX - 34f, pageTop + 70f),
-                        end = androidx.compose.ui.geometry.Offset(marginX - 34f, pageTop + pageH - 50f),
-                        strokeWidth = 2.2f,
+                        color = Color(0xFFB0432F),
+                        start = androidx.compose.ui.geometry.Offset(marginX - 38f, pageTop + 74f),
+                        end = androidx.compose.ui.geometry.Offset(marginX - 38f, pageTop + pageH - 60f),
+                        strokeWidth = 2.5f,
                     )
-                    if (pageIdx > 0) {
-                        drawLine(
-                            color = Color(0xFF8E7A50),
-                            start = androidx.compose.ui.geometry.Offset(70f, pageTop),
-                            end = androidx.compose.ui.geometry.Offset(this.size.width - 70f, pageTop),
-                            strokeWidth = 2.5f,
-                        )
-                    }
                     pageTop += pageH
                     pageIdx++
                 }
