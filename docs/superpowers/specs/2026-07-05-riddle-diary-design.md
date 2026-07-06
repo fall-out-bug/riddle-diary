@@ -110,13 +110,15 @@ Key properties:
   `BufferOverflow.SUSPEND`** with `extraBufferCapacity = V` (every glyph rendered
   once; lookahead bounded by V); `SendOrchestrator` wires the `buffer(...)`
   operator on the consumer side; LLM edge `.SUSPEND`.
-- **`SendOrchestrator` owns the whole stroke->message pipeline.** It consumes the
-  raw `pointerEvents()` stream and internally runs `PauseDetector`. On the first
-  `Down` of a block it calls `PageStore.createMessage(conversationId)` ->
-  `messageId`, then **serializes per-`Up` stroke `append`s after creation** in its
-  own coroutine — a fast tap whose `Up` precedes the async `createMessage`
-  completion is **buffered**, never dropped or mis-attached. **`DrawSurface` is
-  pure rendering and never writes to `PageStore`.** Single owner, no race.
+- **`SendOrchestrator` owns the stroke->message pipeline:** it consumes the raw
+  `pointerEvents()` stream (and internally runs `PauseDetector`). On the first
+  `Down` of a block it calls `PageStore.createMessage(conversationId, Role.USER)`
+  -> `messageId`, then **serializes per-`Up` stroke `append`s after creation** in
+  its own coroutine — a fast tap whose `Up` precedes the async `createMessage`
+  completion is **buffered**, never dropped or mis-attached. If `createMessage`
+  fails permanently, a "couldn't start a new message; tap to retry" UI is shown
+  and further pen input for that block is ignored. **`DrawSurface` is pure
+  rendering and never writes to `PageStore`.** Single owner, no race.
 - **Persistence throughout the loop** (append-only, idempotent): raw strokes
   (per `Up`, with `idempotencyToken`), recognized text, and assistant text +
   synthesis seed (per chunk, with `chunkIndex`) are persisted via `PageStore`.
@@ -154,7 +156,7 @@ constants live in `RiddleConfig` (§14).
 | **SendOrchestrator** | **Owns the whole pipeline:** consumes `pointerEvents`; runs `PauseDetector`; owns message creation (`createMessage` on first `Down` -> `activeMessageId`) and serialized per-`Up` stroke `append`s; aggregates the block into one `StrokeBatch`; drives `InkRecognizer`; **conditionally launches** `ConversationEngine` only on auto-send or after ✓/edit; **confirm/edit seam**; cancels in-flight work; single worker on `Dispatchers.Default`; wires synth-edge backpressure; collected under `repeatOnLifecycle(STARTED)`. | `fun attach(pointerEvents: Flow<StrokeEvent>)`; `fun confirm(messageId: Long, editedText: String?)`; `val sendState: Flow<SendState>`; `val caption: StateFlow<String?>`; `val activeMessageId: StateFlow<Long?>` |
 | **InkRecognizer** | OCR of a **full writing block** -> text + confidence + alternatives. `preContext` = prior message text for vocabulary priming (null on the first message of a conversation). | `suspend fun recognize(batch: StrokeBatch, preContext: String?): RecognizerResult` |
 | **RecognitionModelManager** | ML Kit Russian model lifecycle. | `modelState: Flow<ModelState>`; `suspend fun ensureModel()` |
-| **ConversationEngine** | History windowing; injects the persona system message; maps domain `Message` -> network `LlmMessage`; **gated on `privacyAcknowledged`**; on launch **creates a distinct ASSISTANT message** (role=ASSISTANT) via `PageStore.createMessage` and emits its id; **normalizes streamed `LlmChunk.Text` into word-boundary chunks**; persists via PageStore (each chunk tagged with a monotonic `chunkIndex` and a per-assistant-message cumulative `startGlyphIndex` so glyph indices are globally monotonic across chunks); maps `LlmErrorCategory -> MessageStatus`/UI. (`LlmProvider` is injected.) | `suspend fun respond(userMessageId: Long, input: RecognizerResult): Flow<ConversationUpdate>` |
+| **ConversationEngine** | History windowing; injects the persona system message; maps domain `Message` -> network `LlmMessage`; **gated on `privacyAcknowledged`**; on launch **creates a distinct ASSISTANT message** (role=ASSISTANT) via `PageStore.createMessage(conversationId, Role.ASSISTANT)` and emits its id; **normalizes streamed `LlmChunk.Text` into word-boundary chunks**; persists via PageStore (each chunk tagged with a monotonic `chunkIndex` and a per-assistant-message cumulative `startGlyphIndex` so glyph indices are globally monotonic across chunks); maps `LlmErrorCategory -> MessageStatus`/UI. (`LlmProvider` is injected.) | `suspend fun respond(userMessageId: Long, input: RecognizerResult): Flow<ConversationUpdate>` |
 | **Summarizer** | Running summary of older turns when the window slides (pluggable; v1 may reuse `LlmProvider`). | `suspend fun summarize(older: List<Message>): String` |
 | **LlmProviderFactory** | Constructs `LlmProvider` from `LlmEndpoint` + `RiddleConfig` + credentials (`EncryptedSharedPreferences`) — the single place that touches Android security plumbing. `modelId` resolves from the active persona's `modelId` (override) else `LlmEndpoint.modelId`. | `fun create(endpoint: LlmEndpoint, config: RiddleConfig): LlmProvider` |
 | **LlmProvider** | Pluggable **streaming** chat seam (OpenAI-compatible now, local later). **Pure network seam** — takes stripped `LlmMessage`(s), decoupled from persona/settings/persistence. Owns its own retries and emits **typed** `LlmChunk.Error(category, retryable)`. | `suspend fun chat(messages: List<LlmMessage>): Flow<LlmChunk>` |
@@ -162,7 +164,7 @@ constants live in `RiddleConfig` (§14).
 | **PageLayout** | Compositor: maps glyph-local paths to screen-space `PlacedStrokePath`; line-breaking; cursor; vertical flow. **Streaming-safe:** completed lines are committed (frozen); only the currently-building line is mutable. | `fun layout(content: List<Layoutable>, viewport: Rect, cursor: Cursor): List<PlacedStrokePath>` |
 | **HandwritingRenderer** | `DrawScope` primitive; animates placed paths via `PathMeasure` + `nextContour()` pen-lifts; throttled to e-ink cadence. | `fun DrawScope.renderAnimated(paths: List<PlacedStrokePath>, progress: State<Float>)` |
 | **EInkDisplayAdapter** | E-ink refresh seam: partial refresh (region) during animation, full refresh after each response; paired begin/end. | `fun beginPartialRefresh(region: Rect?)`; `fun endPartialRefresh()`; `suspend fun fullRefresh()` |
-| **PageStore** | Single source of truth; Room-backed, append-only, **idempotent**; **one internal retry**. `UserStrokes` dedup by `idempotencyToken`; `AssistantChunk` dedup by `(messageId, chunkIndex)`; `RenderProgress`/`StatusChange` are upsert/replace. Message creation is a dedicated seam. | `suspend fun createMessage(conversationId: Long): Result<Long>`; `suspend fun append(event: PageEvent): Result<Unit>`; `fun observe(): Flow<PageSnapshot>` |
+| **PageStore** | Single source of truth; Room-backed, append-only, **idempotent**; **one internal retry**. `createMessage(conversationId, role)` creates a USER or ASSISTANT row. `UserStrokes` dedup by `idempotencyToken`; `AssistantChunk` dedup by `(messageId, chunkIndex)`; `RenderProgress`/`StatusChange` are upsert/replace. | `suspend fun createMessage(conversationId: Long, role: Role): Result<Long>`; `suspend fun append(event: PageEvent): Result<Unit>`; `fun observe(): Flow<PageSnapshot>` |
 | **PersonaRepository** | Persona CRUD + validation (**Room-backed**; not secrets). Exactly one active (transactional toggle + partial unique index on `isActive=1`). | `personas: Flow<List<Persona>>`; `suspend fun active(): Persona`; `suspend fun upsert(p: Persona)` |
 
 **Boundary principle:** each module is deep and replaceable. Explicit seams:
@@ -199,9 +201,12 @@ idle ─(Up+pause)─► paused ─cancel-window─► recognizing ──┘
   Cancel marks the message `status=CANCELLED` (never re-flushed) and returns to
   `idle`; a new block starts a fresh message.
 - **Confidence 0.5–0.7** -> `AwaitingConfirmation`: caption + "edit" (typed
-  text) + "✓". `ConversationEngine.respond` is **NOT** launched until ✓/edit.
-  **Strokes during `AwaitingConfirmation`** extend the current block; the caption
-  updates and OCR is re-run on the augmented batch before `confirm()` commits.
+  text) + "✓". `confirm(messageId, editedText?)`: if `editedText` is non-null,
+  `SendOrchestrator` emits `PageEvent.Recognized` to overwrite the USER message's
+  `recognizedText` **before** launching `ConversationEngine.respond`.
+  `ConversationEngine.respond` is **NOT** launched until ✓/edit. **Strokes during
+  `AwaitingConfirmation`** extend the current block; the caption updates and OCR
+  is re-run on the augmented batch before `confirm()` commits.
 - Once the **first `LlmChunk` arrives**, the request is no longer cancelable; new
   strokes during streaming/animating start a **follow-up turn** (new message).
 - Only **one** LLM request in-flight; triggers arriving while busy are conflated.
@@ -213,8 +218,8 @@ idle ─(Up+pause)─► paused ─cancel-window─► recognizing ──┘
   block ends. Block ends when: the message is sent (auto or ✓), or cancelled, or a
   follow-up turn begins.
 - **`SendOrchestrator` owns the pipeline.** On the first `Down` of a block it
-  calls `PageStore.createMessage(conversationId)` -> `messageId` and publishes it
-  via `activeMessageId`. **It then appends per-`Up` stroke batches
+  calls `PageStore.createMessage(conversationId, Role.USER)` -> `messageId` and
+  publishes it via `activeMessageId`. **It then appends per-`Up` stroke batches
   (`append(UserStrokes(messageId, …, token))`) serialized after `createMessage`
   in its own coroutine**, so a fast tap is buffered until the id exists — no
   drops, no mis-attachment. **`DrawSurface` does not persist**; it only renders.
@@ -358,6 +363,8 @@ persona(id PK, name, systemPrompt, modelId?, maxTokens?, temperature?, isActive)
 message(id PK, conversationId FK, role, displayText, recognizedText?,
         synthesisSeed?, status, createdAt, sortIndex)
             -- role: user | assistant  (one USER + one ASSISTANT row per turn)
+            --   USER row: recognizedText may be set; synthesisSeed is NULL
+            --   ASSISTANT row: synthesisSeed may be set; recognizedText is NULL
             -- status: pending|recognized|sending|streaming|error|complete|cancelled
             --   USER lifecycle: pending->recognized->complete(/cancelled)
             --   ASSISTANT lifecycle: pending->sending->streaming->complete(/error)
@@ -368,6 +375,8 @@ stroke(id PK, messageId FK, strokeIndex, isUser, pointsJson, idempotencyToken UN
 assistant_chunk(id PK, messageId FK, chunkIndex, text, seedJson, UNIQUE(messageId, chunkIndex))
             -- streamed assistant text; messageId -> an ASSISTANT message
             -- UNIQUE(messageId,chunkIndex) => chunk-level idempotency
+            -- startGlyphIndex is NOT persisted; it is recomputed deterministically
+            --   by re-synthesizing prior chunks of the message (seeded)
 render_progress(messageId PK, glyphIndex, pathOffset)   -- upsert; 1:1 with assistant msg
 conversation_summary(id PK, conversationId FK UNIQUE, upToMessageId, summary)  -- one row per conversation
 ```
@@ -384,12 +393,13 @@ conversation_summary(id PK, conversationId FK UNIQUE, upToMessageId, summary)  -
 
 ### History windowing (ConversationEngine)
 
-- Sliding window of the **last N turns** (`RiddleConfig.historyWindowTurns`) + a
-  **running summary** of older turns sent to the LLM. Summary produced by the
-  `Summarizer` seam, persisted in `conversation_summary` (advanced as the window
-  slides; summarize only on slide to bound cost). If the `Summarizer` fails, v1
-  degrades gracefully (omit the summary; do not block the turn). N and the summary
-  are observable (`historySize(): Int`).
+- Sliding window of the **last N turns** (`RiddleConfig.historyWindowTurns`; a
+  "turn" = one USER + one ASSISTANT message pair) + a **running summary** of older
+  turns sent to the LLM. Summary produced by the `Summarizer` seam, persisted in
+  `conversation_summary` (advanced as the window slides; summarize only on slide
+  to bound cost). If the `Summarizer` fails, v1 degrades gracefully (omit the
+  summary; do not block the turn). N and the summary are observable
+  (`historySize(): Int`).
 
 ---
 
@@ -461,7 +471,7 @@ and UI.
 | LLM 429 (`RateLimited`) | LlmProvider | 1 retry after 30s; distinct UI |
 | Auth (`Auth`) | UI | re-prompt credentials; do not retry silently |
 | LLM **partial failure** (text drawn then socket died) | ConversationEngine | preserve drawn glyphs; append "…" + retry — **no full regen** |
-| LLM **empty** response | ConversationEngine | 1 LLM auto-retry (new request); if text then arrives, regenerate paths with a fresh `SynthesisSeed`; else "…" + "tap to retry" |
+| LLM **empty** response | ConversationEngine | 1 LLM auto-retry (new request) **reusing the same ASSISTANT row** with a fresh `SynthesisSeed`; if text then arrives, regenerate paths; else "…" + "tap to retry" |
 | LLM **post-retry failure** | ConversationEngine | `status=ERROR`; "tap to retry" UI |
 | Cancellation | SendOrchestrator | cancel-window cancels OCR (pre-network only); pen-during-LLM = follow-up turn |
 | Missing glyph | HandwritingSynthesizer | word-granularity fallback + alternate ink tone (§8.2) |
@@ -609,10 +619,10 @@ data class LlmEndpoint(val baseUrl: String, val modelId: String)   // HTTPS only
 
 sealed interface ConversationUpdate {     // ConversationEngine.respond(userMessageId, …) emissions
     data class AssistantCreated(val userMessageId: Long, val assistantMessageId: Long) : ConversationUpdate  // first emission
-    data class Recognized(val messageId: Long, val result: RecognizerResult) : ConversationUpdate           // messageId = user
     data class AssistantChunk(val messageId: Long, val chunkIndex: Int, val text: String, val seed: SynthesisSeed, val startGlyphIndex: Int) : ConversationUpdate  // messageId = assistant
     data class StatusChange(val messageId: Long, val status: MessageStatus) : ConversationUpdate
 }
+// (Recognition results are owned by SendOrchestrator/InkRecognizer, NOT emitted here.)
 
 // ---- Handwriting / layout ----
 data class SynthesisSeed(val seed: Long, val fontId: String, val jitter: Float)
