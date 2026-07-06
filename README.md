@@ -8,7 +8,22 @@ recognized on-device → an LLM replies → the reply **draws itself** onto the 
 glyph-by-glyph, as if ink were appearing on its own. The conversation accumulates
 down a single continuous notebook.
 
-![status](https://img.shields.io/badge/status-working%20prototype%20on%20device-blue)
+![status](https://img.shields.io/badge/status-working%20on%20device-green)
+
+## Features
+
+- **Onyx-like writing** — real-time, Bezier-smoothed stylus ink (EMR).
+- **Auto-send on pause** — no buttons; ~1.4 s after you stop writing it recognizes
+  and replies.
+- **On-device OCR** — ML Kit Digital Ink (Russian) converts your handwriting to text.
+- **Streaming LLM** — OpenAI-compatible (default OpenRouter); the "Tom Riddle" voice
+  replies.
+- **Self-drawing replies** — the answer writes itself on the page glyph-by-glyph with
+  wet-ink spread and occasional drips.
+- **Old-planner pages** — aged-paper background, ruled lines, red margin, date header,
+  page-break gutters; fullscreen immersive.
+- **Persistent** — the whole diary (your strokes + replies + history) survives restart
+  (JSON in app internal storage).
 
 ## Target device
 
@@ -107,9 +122,13 @@ kotlinx-serialization · Gradle Kotlin DSL · Docker build env
 
 ## Status & next steps
 
-Working prototype on the device. Planned: ink-blot / ink-spread visual effects,
-Room persistence (survive restart mid-response), full single-stroke font (true
-pen strokes vs. outline-tracing), history windowing + summarization.
+Working end-to-end on the BOOX Note Air5 C: write → OCR → LLM → self-drawn reply,
+paged old-planner look, fullscreen, and the diary persists across restart.
+
+Possible next steps: a true single-stroke Cyrillic font (current reply uses a filled
+handwriting font — single-stroke Hershey/Cyrillic is a known rabbit hole, see
+`docs/`); history windowing + summarization for long conversations; per-conversation
+personas / settings screen.
 
 See `docs/superpowers/specs/2026-07-05-riddle-diary-design.md` for the complete
-design.
+design and `docs/superpowers/plans/` for the implementation plan.
