@@ -83,7 +83,7 @@ fun DiaryScreen(
     val datePaint = remember {
         android.graphics.Paint(responsePaint).apply {
             textSize = 46f
-            color = Color(0xFF8C6E4A).toArgb()
+            color = Color(0xFF9A9A9A).toArgb()
             alpha = 200
         }
     }
@@ -246,21 +246,21 @@ fun DiaryScreen(
                     },
             ) {
                 // --- old-planner page background ---
-                drawRect(color = Color(0xFFEAD5A6))
+                drawRect(color = Color.White)
                 val marginX = 150f
                 val pageH = 2400f
-                val ruleColor = Color(0xFF9C7E4A)
+                val ruleColor = Color(0xFFE3DED2)
                 var pageTop = 0f
                 var pageIdx = 0
                 while (pageTop < this.size.height) {
                     if (pageIdx > 0) {
                         drawRect(
-                            color = Color(0xFFD2B578),
+                            color = Color(0xFFEFEAE0),
                             topLeft = androidx.compose.ui.geometry.Offset(0f, pageTop - 18f),
                             size = androidx.compose.ui.geometry.Size(this.size.width, 34f),
                         )
                         drawLine(
-                            color = Color(0xFF7A6240),
+                            color = Color(0xFFCDC7BB),
                             start = androidx.compose.ui.geometry.Offset(60f, pageTop),
                             end = androidx.compose.ui.geometry.Offset(this.size.width - 60f, pageTop),
                             strokeWidth = 1.5f,
@@ -280,7 +280,7 @@ fun DiaryScreen(
                         y += 92f
                     }
                     drawLine(
-                        color = Color(0xFFB0432F),
+                        color = Color(0xFFB0574A),
                         start = androidx.compose.ui.geometry.Offset(marginX - 38f, pageTop + 74f),
                         end = androidx.compose.ui.geometry.Offset(marginX - 38f, pageTop + pageH - 60f),
                         strokeWidth = 2.5f,
@@ -289,9 +289,9 @@ fun DiaryScreen(
                     pageIdx++
                 }
                 responses.forEach { rg ->
-                    renderAnimated(rg.paths, rg.progress, Color(0xFF5A4A2F))
+                    renderAnimated(rg.paths, rg.progress, Color(0xFF383838))
                 }
-                val userInk = Color(0xFF1A1A2E)
+                val userInk = Color(0xFF141414)
                 val f = frame
                 allUser.forEach { renderUserStroke(it.points, userInk, 4.5f) }
                 curStroke?.let { renderUserStroke(it, userInk, 4.5f) }

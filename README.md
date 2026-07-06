@@ -11,8 +11,6 @@ down a single continuous notebook.
 ![status](https://img.shields.io/badge/status-working%20on%20device-green)
 ![license](https://img.shields.io/badge/code-MIT-blue)
 
-![Riddle Diary on BOOX Note Air5 C](screenshot.png)
-
 ## Features
 
 - **Onyx-like writing** — real-time, Bezier-smoothed stylus ink (EMR).
@@ -23,8 +21,11 @@ down a single continuous notebook.
   replies.
 - **Self-drawing replies** — the answer writes itself on the page glyph-by-glyph with
   wet-ink spread and occasional drips.
-- **Old-planner pages** — aged-paper background, ruled lines, red margin, date header,
-  page-break gutters; fullscreen immersive.
+- **Old-planner pages** — ruled lines, red margin, date header, page-break
+  gutters; fullscreen immersive. Renders in clean **black & white** (no dither on
+  e-ink or IPS): the aged-paper sepia is meant to come from the **BOOX warm
+  frontlight** (candlelight mode) — atmosphere as a property of the screen, not
+  the app.
 - **Persistent** — the whole diary (your strokes + replies + history) survives restart
   (JSON in app internal storage).
 
