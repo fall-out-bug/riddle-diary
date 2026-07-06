@@ -1,16 +1,13 @@
 # Riddle Diary — Handwriting Chat for BOOX Note Air5 C
 
-- **Status:** Design v6 (post-review round 5) — pending implementation plan
+- **Status:** Design v7 (post-review round 6) — pending implementation plan
 - **Date:** 2026-07-05
 - **Proof level:** inspected
 - **Target device:** BOOX Note Air5 C
-- **Review:** 3-subagent review over 5 rounds. deepseek + minimax at LGTM since
-  round 4; kimi raised 6 more majors (M7–M12) in round 5. v6 closes them:
-  `respond(messageId, …)`, `createMessage` seam (no circular id), `PENDING`
-  semantics, glyph-local synth output, diagram edge fix, `confirm/edit` seam,
-  plus non-blocking minors (seed persistence, glyphIndex progress, typed
-  `SendState.Error`, `historyWindowTurns`, idempotency token, partial-refresh
-  end, LLM config injection, edit modality, writing-block boundary).
+- **Review:** 3-subagent review over 6 rounds. deepseek + minimax at LGTM; kimi
+  round-6 must-fix = M13 (message-creation ownership) + M14 (idempotent append).
+  v7 closes those, plus the cancelled-message-resend bug, plus non-blocking
+  minors.
 
 ---
 
@@ -74,57 +71,62 @@ no "send" button. The conversation persists as one continuous notebook.
  STYLUS ──────────────────────► DrawSurface (single canvas owner)
                                (stylus => ink; finger passes through to scroll;
                                 eraser/barrel ignored)
-                                   │
-                     ┌─────────────┼───────────────────────────┐
-                     │ (render user ink)                       │ (render AI ink via
-                     ▼                                         │  DrawScope primitive)
-                PageLayout ─────────placed paths────────► HandwritingRenderer
-                (maps glyph-local paths to                  ▲
-                 screen-space; committed lines              │ placed paths (Flow, SUSPEND)
-                 frozen during streaming)                   │
-                     ▲                                      │
-                     │ glyph-local paths (Flow)             │
-                HandwritingSynthesizer ◄──── word chunks ──── ConversationEngine
-                                                                   ▲   │
-                   PageStore ◄── text+seed (AssistantChunk) ──────┘   │ request (messages incl. system msg)
-                 (source of truth;                                      ▼
-                  append-only)                                   LlmProvider ──(LlmChunk Flow)──► ConversationEngine
-                                                                  (pure network seam; decoupled from
-                                                                   Persona and settings; typed errors)
-                ConversationEngine ──recognize──► InkRecognizer
-                     ▲                                │
-                     │ preContext (read PageStore)    │ caption StateFlow ──► DrawSurface (caption)
-                     │                                │ StrokeBatch (full writing block)
-                SendOrchestrator ◄── SendTrigger ── PauseDetector(clock) ◄── StrokeEvent
-                (state machine incl. AwaitingConfirmation; conditionally launches
-                 ConversationEngine only on auto-send or after ✓/edit (typed text);
-                 confirm(messageId, editedText?) seam; owns cancel + per-request
-                 CoroutineScope; exposes sendState + caption; repeatOnLifecycle(STARTED))
+                                   │ pointerEvents() (multicast)
+                     ┌─────────────┼──────────────────────────────────┐
+                     │ (render user ink)                              │
+                     ▼                                               ▼
+                PageLayout ──placed paths──► HandwritingRenderer   SendOrchestrator
+                (maps glyph-local to              ▲                (owns message creation:
+                 screen-space; committed          │                 on first Down ->
+                 lines frozen)                    │ placed           createMessage ->
+                     ▲                            │ paths (SUSPEND)  activeMessageId;
+                     │ glyph-local paths                                confirm/edit seam;
+                     │                                                   state machine)
+                HandwritingSynthesizer ◄──word chunks──► ConversationEngine ◄── LlmChunk Flow ── LlmProvider
+                                                                  ▲                       (pure network seam;
+                   PageStore ◄── text+seed ────────────────────────┘                        typed errors;
+                 (source of truth;                                                      injected via
+                  append-only,                                                           LlmProviderFactory)
+                  idempotent)                                                  ▲
+                     ▲                                                        │ request (messages incl. system msg)
+                     │ StrokeBatch (full block) + preContext                   │
+                SendOrchestrator ──recognize(StrokeBatch)──► InkRecognizer ───result──► (passed to respond(messageId, result))
+                     ▲
+                     │ SendTrigger
+                SendOrchestrator ◄── PauseDetector(clock) ◄── StrokeEvent
+                caption StateFlow ──► DrawSurface (caption)
+                (collected under repeatOnLifecycle(STARTED))
 ```
 
 Key properties:
 - **Streaming everywhere:** OCR `suspend`, LLM `Flow<LlmChunk>`, synthesis
   `Flow<List<GlyphPath>>`. The renderer begins glyph N while the model still
-  emits N+1. **Backpressure is explicit** per cross-module Flow: the **synth ->
-  renderer edge uses `BufferOverflow.SUSPEND`** with `extraBufferCapacity = V`
-  (every glyph rendered exactly once; lookahead bounded by V); LLM edge
-  `.SUSPEND`.
+  emits N+1. **Backpressure is explicit:** the **synth -> renderer edge uses
+  `BufferOverflow.SUSPEND`** with `extraBufferCapacity = V` (every glyph rendered
+  once; lookahead bounded by V); the `SendOrchestrator` wires the `buffer(...)`
+  operator on the consumer side (it owns the per-message `CoroutineScope`); LLM
+  edge `.SUSPEND`.
+- **`SendOrchestrator` owns message creation:** on the first `Down` of a block it
+  calls `PageStore.createMessage(conversationId)` and publishes
+  `activeMessageId`; `DrawSurface` appends per-`Up` stroke batches using that id.
+  No race, single owner.
 - **Persistence throughout the loop** (append-only): raw strokes, recognized
   text, and assistant text + synthesis seed are persisted via `PageStore` as
   produced. Raw strokes **batched per pointer `Up`** with a caller-generated
-  **idempotency token** (so a retry after a lost ack cannot duplicate a batch).
-  Raw user strokes flow `DrawSurface -> PageStore`; **synthesized paths are NOT
-  persisted as ink** — regenerated from `synthesisSeed`; `PageStore` receives
-  only `AssistantChunk` (text + seed) from `ConversationEngine`.
+  **idempotency token**. `append` is **idempotent** — a `UNIQUE` violation on a
+  repeated token is treated as success (content verified), so a retry after a
+  lost ack neither duplicates nor fails. Raw user strokes flow
+  `DrawSurface -> PageStore`; **synthesized paths are NOT persisted as ink** —
+  regenerated from `synthesisSeed`; `PageStore` receives only `AssistantChunk`
+  (text + seed) from `ConversationEngine`.
 - **`PageStore` is the single source of truth**; `ConversationEngine` reads and
   writes through it and holds no exclusive message state.
 - **One canvas owner (`DrawSurface`)**; `HandwritingRenderer` is a `DrawScope`
   primitive it invokes.
 - **Caption + preContext edges:** recognized text is emitted to `DrawSurface` as
   a caption; preceding text is read from `PageStore` to pass as `preContext`.
-- **Lifecycle:** the orchestrator's `process(...)` collector and the animation
-  driver run under `repeatOnLifecycle(Lifecycle.State.STARTED)`; pause on
-  `STOPPED`.
+- **Lifecycle:** the orchestrator's collectors and the animation driver run under
+  `repeatOnLifecycle(Lifecycle.State.STARTED)`; pause on `STOPPED`.
 
 ### 3.2 Modules
 
@@ -133,26 +135,27 @@ constants live in `RiddleConfig` (§14).
 
 | Module | Responsibility | Draft interface |
 |---|---|---|
-| **DrawSurface** | Sole canvas owner + composable entry point. `TOOL_TYPE_STYLUS` produces ink; **finger events pass through** to the containing scrollable (`PointerEventPass`/`pointerInteropFilter`); eraser/barrel ignored. Batches strokes per `Up` (with idempotency token) before persisting. | `pointerEvents(): Flow<StrokeEvent>`; `pageState: StateFlow<PageSnapshot>` |
+| **DrawSurface** | Sole canvas owner + composable entry point. `TOOL_TYPE_STYLUS` produces ink; **finger events pass through** to the containing scrollable (`PointerEventPass`/`pointerInteropFilter`); eraser/barrel ignored. Renders user ink + AI ink; batches strokes per `Up` and appends them to the orchestrator-provided `activeMessageId` (with idempotency token). | `pointerEvents(): Flow<StrokeEvent>`; `pageState: StateFlow<PageSnapshot>` |
 | **PauseDetector** | Pure logic: detects writing pause from **raw pointer events**; injectable clock. | `observe(events: Flow<StrokeEvent>, clock: MonotonicClock): Flow<SendTrigger>` |
-| **SendOrchestrator** | Owns the send state machine (incl. `AwaitingConfirmation`); **conditionally launches** `ConversationEngine` only on auto-send or after ✓/edit; **confirm/edit seam**; cancels in-flight work; single worker on `Dispatchers.Default`; collected under `repeatOnLifecycle(STARTED)`. Aggregates per-`Up` strokes into one `StrokeBatch` (read back via `PageStore.observe`) before recognition. | `fun process(triggers: Flow<SendTrigger>)`; `fun confirm(messageId: Long, editedText: String?)`; `val sendState: Flow<SendState>`; `val caption: StateFlow<String?>` |
-| **InkRecognizer** | OCR of a **full writing block** -> text + confidence + alternatives. | `suspend fun recognize(batch: StrokeBatch, preContext: String?): RecognizerResult` |
+| **SendOrchestrator** | **Owns message creation** (`createMessage` on first `Down` -> `activeMessageId`) and the send state machine (incl. `AwaitingConfirmation`); drives recognition (`InkRecognizer`) and **conditionally launches** `ConversationEngine` only on auto-send or after ✓/edit; **confirm/edit seam**; cancels in-flight work; single worker on `Dispatchers.Default`; wires synth-edge backpressure; collected under `repeatOnLifecycle(STARTED)`. | `fun process(triggers: Flow<SendTrigger>)`; `fun confirm(messageId: Long, editedText: String?)`; `val sendState: Flow<SendState>`; `val caption: StateFlow<String?>`; `val activeMessageId: StateFlow<Long?>` |
+| **InkRecognizer** | OCR of a **full writing block** -> text + confidence + alternatives. `preContext` = prior message text for vocabulary priming (null on the first message of a conversation). | `suspend fun recognize(batch: StrokeBatch, preContext: String?): RecognizerResult` |
 | **RecognitionModelManager** | ML Kit Russian model lifecycle. | `modelState: Flow<ModelState>`; `suspend fun ensureModel()` |
-| **ConversationEngine** | History windowing; injects the persona system message as the first `Message`; **gated on `privacyAcknowledged`**; **normalizes streamed `LlmChunk.Text` into word-boundary chunks**; persists via PageStore; maps `LlmErrorCategory -> MessageStatus`/UI; constructs `LlmProvider` from `LlmEndpoint` + `RiddleConfig` + credentials (read from `EncryptedSharedPreferences`) so the provider stays a pure seam. | `suspend fun respond(messageId: Long, input: RecognizerResult): Flow<ConversationUpdate>` |
+| **ConversationEngine** | History windowing; injects the persona system message as the first `Message`; **gated on `privacyAcknowledged`**; **normalizes streamed `LlmChunk.Text` into word-boundary chunks**; persists via PageStore; maps `LlmErrorCategory -> MessageStatus`/UI. (`LlmProvider` is **injected** — ConversationEngine does not construct it.) | `suspend fun respond(messageId: Long, input: RecognizerResult): Flow<ConversationUpdate>` |
 | **Summarizer** | Running summary of older turns when the window slides (pluggable; v1 may reuse `LlmProvider`). | `suspend fun summarize(older: List<Message>): String` |
-| **LlmProvider** | Pluggable **streaming** chat seam (OpenAI-compatible now, local later). **Pure network seam** — decoupled from persona and settings; constructed with `LlmEndpoint` + defaults. Owns its own retries and emits **typed** `LlmChunk.Error(category, retryable)`. | `suspend fun chat(messages: List<Message>): Flow<LlmChunk>` |
+| **LlmProviderFactory** | Constructs `LlmProvider` from `LlmEndpoint` + `RiddleConfig` + credentials (read from `EncryptedSharedPreferences`) — the single place that touches Android security plumbing. | `fun create(endpoint: LlmEndpoint, config: RiddleConfig): LlmProvider` |
+| **LlmProvider** | Pluggable **streaming** chat seam (OpenAI-compatible now, local later). **Pure network seam** — decoupled from persona and settings. Owns its own retries and emits **typed** `LlmChunk.Error(category, retryable)`. | `suspend fun chat(messages: List<Message>): Flow<LlmChunk>` |
 | **HandwritingSynthesizer** | Text -> **glyph-local** stroke paths (stroke-font + jitter now, ML later); streaming word-boundary chunks. (Does NOT place on screen — that is `PageLayout`'s job.) | `fun synthesize(text: Flow<String>, seed: SynthesisSeed): Flow<List<GlyphPath>>`; plus `synthesizeAll(text, seed): List<GlyphPath>` for replay/tests. |
 | **PageLayout** | Compositor: maps glyph-local paths to screen-space `PlacedStrokePath`; line-breaking; cursor; vertical flow. **Streaming-safe:** completed lines are committed (frozen); only the currently-building line is mutable. | `fun layout(content: List<Layoutable>, viewport: Rect, cursor: Cursor): List<PlacedStrokePath>` |
 | **HandwritingRenderer** | `DrawScope` primitive; animates placed paths via `PathMeasure` + `nextContour()` pen-lifts; throttled to e-ink cadence. | `fun DrawScope.renderAnimated(paths: List<PlacedStrokePath>, progress: State<Float>)` |
 | **EInkDisplayAdapter** | E-ink refresh seam: partial refresh (region) during animation, full refresh after each response; paired begin/end. | `fun beginPartialRefresh(region: Rect?)`; `fun endPartialRefresh()`; `suspend fun fullRefresh()` |
-| **PageStore** | Single source of truth; Room-backed, append-only; **one internal retry** on transient failure. Message creation is a dedicated seam (returns the id); increments reference an existing id. | `suspend fun createMessage(conversationId: Long): Result<Long>`; `suspend fun append(event: PageEvent): Result<Unit>`; `fun observe(): Flow<PageSnapshot>` |
+| **PageStore** | Single source of truth; Room-backed, append-only; **one internal retry**; `append` is **idempotent** (a `UNIQUE` violation on a repeated `idempotencyToken` = success). Message creation is a dedicated seam (returns the id). | `suspend fun createMessage(conversationId: Long): Result<Long>`; `suspend fun append(event: PageEvent): Result<Unit>`; `fun observe(): Flow<PageSnapshot>` |
 | **PersonaRepository** | Persona CRUD + validation (**Room-backed**; personas are not secrets). Exactly one active (transactional toggle + partial unique index on `isActive=1`). | `personas: Flow<List<Persona>>`; `suspend fun active(): Persona`; `suspend fun upsert(p: Persona)` |
 
 **Boundary principle:** each module is deep and replaceable. Explicit seams:
-`LlmProvider`, `HandwritingSynthesizer`, `Summarizer`, `EInkDisplayAdapter`,
-`RecognitionModelManager`, `MonotonicClock` — each has a v1 impl and a fake/test
-impl. `HandwritingSynthesizer` emits glyph-local paths; `PageLayout` is the only
-module that knows screen coordinates.
+`LlmProviderFactory`, `LlmProvider`, `HandwritingSynthesizer`, `Summarizer`,
+`EInkDisplayAdapter`, `RecognitionModelManager`, `MonotonicClock` — each has a v1
+impl and a fake/test impl. `HandwritingSynthesizer` emits glyph-local paths;
+`PageLayout` is the only module that knows screen coordinates.
 
 ### 3.3 Send-state machine (owned by SendOrchestrator)
 
@@ -164,24 +167,26 @@ idle ─(Up+pause)─► paused ─cancel-window─► recognizing ──┘
   ▲                                            │
   │                            (conf>=0.7)     │ (0.5<=conf<0.7)
   │                                  ▼         ▼
-  │                              sending   awaitingConfirmation
-  │                                  │       │      │
-  │                  (first LlmChunk)│       │(✓/edit)│(cancel)
-  │                                  ▼       └──┬────┘
-  └───────────────────────────── complete ◄── streaming
+  │                              sending   awaitingConfirmation ◄─┐
+  │                                  │       │      │             │ (more strokes:
+  │                  (first LlmChunk)│       │(✓/edit)│(cancel)   │  re-run OCR on
+  │                                  ▼       └──┬────┘           │  augmented batch;
+  └───────────────────────────── complete ◄── streaming           │  caption updates)
                                              ▲
                                              │ (new strokes during streaming/animating
                                              │  => follow-up turn: a NEW message is
-                                             │  created; orchestrator stays in streaming
-                                             │  for the current response, the new block
-                                             │  queues via conflation)
+                                             │  created; current response keeps streaming;
+                                             │  new block queues via conflation until
+                                             │  in-flight completes)
 ```
 
-- The **cancel-window applies only to `paused`/`recognizing`** (before any network
-  work). Cancel discards the partial PENDING message — a new writing block starts
-  a fresh message.
+- The **cancel-window applies only to `paused`/`recognizing`** (pre-network).
+  Cancel marks the message `status=CANCELLED` (never re-flushed) and returns to
+  `idle`; a new block starts a fresh message.
 - **Confidence 0.5–0.7** -> `AwaitingConfirmation`: caption + "edit" (typed
   text) + "✓". `ConversationEngine.respond` is **NOT** launched until ✓/edit.
+  **Strokes during `AwaitingConfirmation`** extend the current block; the caption
+  updates and OCR is re-run on the augmented batch before `confirm()` commits.
 - Once the **first `LlmChunk` arrives**, the request is no longer cancelable; new
   strokes during streaming/animating start a **follow-up turn** (new message).
 - Only **one** LLM request in-flight; triggers arriving while busy are conflated.
@@ -192,17 +197,20 @@ idle ─(Up+pause)─► paused ─cancel-window─► recognizing ──┘
 - A **writing block** = strokes from the first `Down` after `idle` until the
   block ends. Block ends when: the message is sent (auto or ✓), or cancelled, or a
   follow-up turn begins.
-- The **first `Down`** calls `PageStore.createMessage(conversationId)` ->
-  `messageId`; the message starts `status=PENDING`. Subsequent per-`Up` stroke
-  batches `append(UserStrokes(messageId, …, idempotencyToken))`.
-- `SendOrchestrator` reads pending strokes back via `PageStore.observe()` and
-  aggregates them into **one `StrokeBatch`** (the full block) before calling
-  `InkRecognizer.recognize`.
+- **`SendOrchestrator` owns message creation.** On the first `Down` of a block it
+  calls `PageStore.createMessage(conversationId)` -> `messageId` and publishes it
+  via `activeMessageId`; `DrawSurface` appends per-`Up` stroke batches
+  `append(UserStrokes(messageId, …, token))` using that id.
+  **`SendTrigger.requestId` *is* that `messageId`** (no separate correlation).
+- `SendOrchestrator` aggregates the block's strokes (via `PageStore.observe()`)
+  into **one `StrokeBatch`** before calling `InkRecognizer.recognize`.
 - **`PENDING` means "not yet sent to the LLM".** OCR may populate
   `recognizedText` while still `PENDING` (during `AwaitingConfirmation` or while
-  privacy is declined). The status moves to `RECOGNIZED` only when recognized
-  text is committed for sending; `SENDING -> STREAMING -> COMPLETE` (or `ERROR`).
-  Flush of queued messages (privacy re-acknowledge / connectivity restore) queries
+  privacy is declined / credentials missing). Status moves to `RECOGNIZED` when
+  recognized text is committed for sending; `SENDING -> STREAMING -> COMPLETE`
+  (or `ERROR`, or `CANCELLED`). **Cancelled rows are never re-flushed.** Flush of
+  queued messages — triggers: **privacy re-acknowledge**, **connectivity
+  restore**, **credentials configured** — queries
   `status=PENDING AND recognizedText IS NOT NULL`.
 
 ---
@@ -270,9 +278,8 @@ idle ─(Up+pause)─► paused ─cancel-window─► recognizing ──┘
 2. **Privacy acknowledgment:** `privacyAcknowledged` gates `ConversationEngine`
    (and thus any cloud send). If the user **declines**, messages stay
    `status=PENDING` (with `recognizedText`) and a permanent "configure provider /
-   enable cloud" prompt is shown; nothing is silently sent. If the user
-   **re-acknowledges later**, `SendOrchestrator` flushes messages with
-   `status=PENDING AND recognizedText IS NOT NULL`.
+   enable cloud" prompt is shown; nothing is silently sent. Flush triggers:
+   privacy re-acknowledge, connectivity restore, **credentials configured**.
 3. **LLM provider setup:** HTTPS endpoint, model name, API key, optional
    temperature/maxTokens. "Credentials not configured" is detected **distinctly
    from network errors** (not surfaced as 401). Credentials in
@@ -289,7 +296,7 @@ idle ─(Up+pause)─► paused ─cancel-window─► recognizing ──┘
 | UI | Jetpack Compose | single `Canvas` in `DrawSurface`; `Animatable`/`PathMeasure`; `repeatOnLifecycle`; pointer pass-through |
 | `minSdk` / `targetSdk` | 31 / 35 | device is API 35 |
 | Input OCR | ML Kit **Digital Ink Recognition** | Russian model, on-device; `suspend`, typically **0.5–2 s** (assumption — verify on device) |
-| LLM client | OkHttp + kotlinx.serialization, OpenAI-compatible, **SSE/chunked** | behind `LlmProvider`; defaults via `RiddleConfig`; typed errors via `LlmErrorCategory` |
+| LLM client | OkHttp + kotlinx.serialization, OpenAI-compatible, **SSE/chunked** | behind `LlmProvider` (via `LlmProviderFactory`); defaults via `RiddleConfig`; typed errors via `LlmErrorCategory` |
 | Persistence | Room (SQLite) | schema §7 |
 | Handwriting (v1) | single-line **stroke** TTF, **verified open-path** + jitter; generated-stroke fallback | §8 |
 | Stylus | `PointerInput`/`MotionEvent` (EMR) | pressure, tilt; `TOOL_TYPE_STYLUS` => ink; finger passes through; eraser/barrel ignored |
@@ -324,21 +331,22 @@ persona(id PK, name, systemPrompt, modelId?, maxTokens?, temperature?, isActive)
             -- stored in Room; NOT a secret.
 message(id PK, conversationId FK, role, displayText, recognizedText?,
         synthesisSeed?, status, createdAt, sortIndex)
-            -- status: pending | recognized | sending | streaming | error | complete
+            -- status: pending | recognized | sending | streaming | error | complete | cancelled
             -- @Index(value=["conversationId","sortIndex"]) for history reads
 stroke(id PK, messageId FK, strokeIndex, isUser, pointsJson, idempotencyToken UNIQUE)
             -- raw points for replay; idempotencyToken makes per-Up appends safe to retry
 render_progress(messageId PK, glyphIndex, pathOffset)   -- 1:1 with assistant msg
-            -- glyphIndex (synthesis is glyph-based) avoids a char->glyph map on cold restart
 conversation_summary(id PK, conversationId FK, upToMessageId, summary)  -- running summary
 ```
 
 - Raw user strokes live in `stroke` (re-renderable on scroll-back).
 - Assistant responses store `displayText` + `synthesisSeed`; paths regenerated
   deterministically (not persisted as ink).
-- `render_progress`: on cold restart, all glyphs up to `glyphIndex` are shown
-  **fully drawn** at `pathOffset` (no animation replay).
-- `status` makes the pending/sending/error/retry lifecycle queryable.
+- `render_progress`: on cold restart, glyphs with index < `glyphIndex` are shown
+  fully drawn; the glyph at `glyphIndex` resumes from `pathOffset`; later glyphs
+  are not yet drawn. No animation replay.
+- `status` makes the pending/sending/error/retry lifecycle queryable;
+  `CANCELLED` rows are excluded from flush.
 
 ### History windowing (ConversationEngine)
 
@@ -384,8 +392,8 @@ single-stroke paths**.
 ## 9. Security & Privacy
 
 - **Credentials** (LLM API key, endpoint) in `EncryptedSharedPreferences` backed
-  by the **Android Keystore**. Never plain prefs, Room, or logs. (Personas are
-  not secrets and live in Room.)
+  by the **Android Keystore** (read only by `LlmProviderFactory`). Never plain
+  prefs, Room, or logs. (Personas are not secrets and live in Room.)
 - **Transport:** TLS 1.2+; `android:usesCleartextTraffic="false"`; HTTPS-only
   base URLs enforced on save.
 - **Logging:** no headers/bodies/keys logged. Any HTTP interceptor is
@@ -406,27 +414,27 @@ and UI.
 
 | Case | Owner | Policy |
 |---|---|---|
-| Auto-send false trigger | SendOrchestrator | cancel-window (§4.1); cancel discards partial PENDING message |
+| Auto-send false trigger | SendOrchestrator | cancel-window (§4.1); cancel marks `status=CANCELLED` (never re-flushed) |
 | Rapid repeated triggers | SendOrchestrator | conflated channel; one in-flight request |
 | OCR model not downloaded | RecognitionModelManager | download screen; persist strokes meanwhile; "Recognize pending" |
 | OCR low confidence | InkRecognizer + UI | `<0.5` discard ("…"); `0.5–0.7` `AwaitingConfirmation`; `>=0.7` auto-send |
 | OCR hard failure | InkRecognizer | "couldn't read the handwriting" + retry |
 | No network (`Network`) | SendOrchestrator / ConversationEngine | queue (`status=PENDING`); auto-retry on connectivity |
-| Credentials missing (`CredentialsMissing`) | UI + SendOrchestrator | distinct from network; permanent "configure provider" prompt; messages stay `PENDING` |
-| Privacy not acknowledged | ConversationEngine | `respond` gated on `privacyAcknowledged`; on re-acknowledge, flush `PENDING` w/ `recognizedText` |
+| Credentials missing (`CredentialsMissing`) | UI + SendOrchestrator | distinct from network; permanent "configure provider" prompt; messages stay `PENDING`; flush when configured |
+| Privacy not acknowledged | ConversationEngine | `respond` gated; flush on re-acknowledge |
 | LLM timeout / 5xx (`Timeout`/`ProviderError`) | LlmProvider | 2 retries, exp backoff (1s, 3s); then `LlmChunk.Error(retryable=false)` |
 | LLM 429 (`RateLimited`) | LlmProvider | 1 retry after 30s; distinct UI |
 | Auth (`Auth`) | UI | re-prompt credentials; do not retry silently |
 | LLM **partial failure** (text drawn then socket died) | ConversationEngine | preserve drawn glyphs; append "…" + retry — **no full regen** |
-| LLM **empty** response | ConversationEngine | 1 auto-retry (different seed; full regen allowed); else "…" + "tap to retry" |
+| LLM **empty** response | ConversationEngine | 1 LLM auto-retry (new request); if text then arrives, regenerate paths with a fresh `SynthesisSeed`; else "…" + "tap to retry" |
 | LLM **post-retry failure** | ConversationEngine | `status=ERROR`; "tap to retry" UI |
 | Cancellation | SendOrchestrator | cancel-window cancels OCR (pre-network only); pen-during-LLM = follow-up turn |
 | Missing glyph | HandwritingSynthesizer | word-granularity fallback + alternate ink tone (§8.2) |
 | Long response | HandwritingRenderer | progressive via `currentGlyphIndex` (§4.3); never block UI |
-| Room write failure | PageStore | `append`/`createMessage` do **one internal retry** then return `Result`; transient = `SQLiteFullException`/disk I/O -> snackbar; permanent = constraint/schema mismatch -> diagnostics hint; per-Up idempotency token prevents duplicate batches |
+| Room write failure | PageStore | `append`/`createMessage` do **one internal retry**; transient = `SQLiteFullException`/disk I/O -> snackbar; permanent = constraint/schema mismatch -> diagnostics hint; a repeated `idempotencyToken` (UNIQUE) is **idempotent success**, not a failure |
 | Wrong-language input | InkRecognizer | Russian-only v1 (§6); low-confidence discard |
 | **Hot backgrounding** | SendOrchestrator (lifecycle owner) | pause animation (`STOPPED`); resume from current position |
-| **Cold restart mid-response** | SendOrchestrator (restore) via PageStore+Renderer | restore from Room; render response fully-drawn at `render_progress` (no replay) |
+| **Cold restart mid-response** | SendOrchestrator (restore) via PageStore+Renderer | restore from Room; render response at `render_progress` (no replay) |
 
 ---
 
@@ -438,11 +446,11 @@ and UI.
   gating; fake streaming `LlmProvider`. Dense coverage.
 - **Summarizer** (fake) — invoked on window slide; summary persisted.
 - **PauseDetector** — `observe` with `FakeMonotonicClock`.
-- **SendOrchestrator** — state transitions incl. `AwaitingConfirmation` and
-  `complete->idle`; cancel only from `paused`/`recognizing`; conflation;
-  conditional launch (engine NOT launched in `AwaitingConfirmation`);
-  `confirm(messageId, editedText)`; StrokeBatch aggregation from per-`Up` via
-  `PageStore.observe`; follow-up turn while streaming.
+- **SendOrchestrator** — message creation on first `Down` + `activeMessageId`;
+  state transitions incl. `AwaitingConfirmation` (re-OCR on augmented strokes) and
+  `complete->idle`; cancel only from `paused`/`recognizing` -> `CANCELLED`;
+  conflation; conditional launch (engine NOT launched in `AwaitingConfirmation`);
+  `confirm(messageId, editedText)`; StrokeBatch aggregation; follow-up turn.
 - **HandwritingSynthesizer** (stroke-font) — path counts; empty text;
   word-granularity fallback; seeded-jitter bounds; **determinism** (same seed +
   same text => byte-equal paths); emits glyph-local paths (no screen coords).
@@ -452,8 +460,9 @@ and UI.
   offset 0.5L.
 - **LlmProvider** (real) — MockWebServer, streamed OpenAI protocol; typed
   `LlmErrorCategory` mapping; retry policy.
-- **PageStore** — Room in-memory; `createMessage` returns id; `append` references
-  existing id; single retry; idempotency token dedup; transient vs permanent.
+- **PageStore** — Room in-memory; `createMessage` returns id; `append`
+  idempotency (repeated token => success, no dup); single retry; transient vs
+  permanent; `CANCELLED` excluded from flush.
 
 ### UI / Compose
 - Inject pointer events into `DrawSurface`; assert stylus => ink; **finger passes
@@ -485,8 +494,8 @@ and UI.
 - **OCR:** ML Kit Digital Ink (on-device, Russian); recognizes a full writing
   block (`StrokeBatch`), not per-stroke.
 - **LLM:** **streaming** abstraction; **pure network seam** (decoupled from
-  persona and settings); typed errors (`LlmErrorCategory`); privacy gating in
-  `ConversationEngine`.
+  persona and settings; constructed by `LlmProviderFactory`); typed errors
+  (`LlmErrorCategory`); privacy gating in `ConversationEngine`.
 - **Handwriting:** stroke fonts + jitter now (verified open-path + fallback), ML
   later via `HandwritingSynthesizer`; **synth emits glyph-local paths**;
   `PageLayout` is the only screen-coordinate owner; synth->renderer `SUSPEND`.
@@ -496,9 +505,10 @@ and UI.
   network only) + `AwaitingConfirmation` for 0.5–0.7 (edit = typed text); engine
   launched **only** on auto-send or ✓.
 - **Async shape:** `suspend`/`Flow` end-to-end with explicit backpressure; one
-  canvas owner; **finger events pass through to scroll**; PageStore single source
-  of truth (`createMessage` + append-only with idempotency tokens, one internal
-  retry); explicit SendOrchestrator state machine; `repeatOnLifecycle(STARTED)`.
+  canvas owner; **finger events pass through to scroll**; **`SendOrchestrator`
+  owns message creation**; PageStore single source of truth (`createMessage` +
+  append-only **idempotent** with one internal retry); explicit SendOrchestrator
+  state machine; `repeatOnLifecycle(STARTED)`.
 - **Russian-only v1**; stylus-ink-only v1 (finger = scroll; eraser/barrel ignored).
 
 ---
@@ -521,7 +531,7 @@ sealed interface StrokeEvent {            // raw pointer stream from DrawSurface
 
 // ---- Recognition ----
 data class RecognizerResult(val text: String, val confidence: Float,
-                            val alternatives: List<String> = emptyList())
+                            val alternatives: List<String> = emptyList())  // alternatives: future alt-text quick-pick
 sealed interface ModelState { object NotDownloaded : ModelState; object Downloading : ModelState; object Ready : ModelState; data class Error(val message: String) : ModelState }
 
 // ---- LLM streaming ----
@@ -531,8 +541,9 @@ data class Message(val id: Long, val conversationId: Long, val role: Role,
                    val synthesisSeed: SynthesisSeed? = null,
                    val status: MessageStatus = MessageStatus.PENDING,
                    val createdAt: Long, val sortIndex: Int)
-enum class MessageStatus { PENDING, RECOGNIZED, SENDING, STREAMING, ERROR, COMPLETE }
+enum class MessageStatus { PENDING, RECOGNIZED, SENDING, STREAMING, ERROR, COMPLETE, CANCELLED }
 // PENDING = not yet sent to the LLM (recognizedText may already be set).
+// CANCELLED = user cancelled; excluded from flush; never sent.
 
 enum class LlmErrorCategory { Network, Timeout, RateLimited, Auth, CredentialsMissing, ProviderError }
 
@@ -542,7 +553,7 @@ sealed interface LlmChunk {
     data class Error(val category: LlmErrorCategory, val message: String, val retryable: Boolean) : LlmChunk
 }
 
-data class LlmEndpoint(val baseUrl: String, val modelId: String)   // HTTPS only; injected into LlmProvider
+data class LlmEndpoint(val baseUrl: String, val modelId: String)   // HTTPS only
 
 sealed interface ConversationUpdate {     // ConversationEngine.respond(messageId, …) emissions
     data class Recognized(val messageId: Long, val result: RecognizerResult) : ConversationUpdate
@@ -562,7 +573,7 @@ sealed interface Layoutable {
 }
 
 // ---- Orchestration ----
-data class SendTrigger(val requestId: Long, val tMs: Long)
+data class SendTrigger(val requestId: Long, val tMs: Long)  // requestId == messageId of the block
 sealed interface SendState {
     object Idle : SendState
     object Paused : SendState
@@ -584,6 +595,7 @@ sealed interface PageEvent {              // PageStore append-only increments (m
     data class StatusChange(val messageId: Long, val status: MessageStatus) : PageEvent
 }
 data class PageSnapshot(val messages: List<Message>, val pendingStrokes: List<Stroke>)
+// pendingStrokes = strokes of the in-progress block whose message is not yet COMPLETE/ERROR/CANCELLED
 
 // ---- Testability seams ----
 interface MonotonicClock { fun nowMs(): Long }
