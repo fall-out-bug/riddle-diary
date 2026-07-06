@@ -1,4 +1,4 @@
-# Riddle Diary — Tracer Bullet Implementation Plan (Phase 1), v2
+# Riddle Diary — Tracer Bullet Implementation Plan (Phase 1), v3
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -70,11 +70,14 @@ Responsibilities:
 ```bash
 brew install openjdk@21
 ```
-Verify the JDK home (Linux; there is no `/usr/libexec/java_home` on Linux):
+**Detect** the JDK home (do not hard-code it — the `libexec` layout differs across Homebrew versions; there is no `/usr/libexec/java_home` on Linux):
 ```bash
-brew --prefix openjdk@21
+OPT="$(brew --prefix openjdk@21)"
+JDK21_HOME="$OPT/libexec"
+[ -x "$JDK21_HOME/bin/java" ] || JDK21_HOME="$OPT/libexec/openjdk.jdk/Contents/Home"
+test -x "$JDK21_HOME/bin/java" && echo "JDK21_HOME=$JDK21_HOME"
 ```
-Expected: a path like `/home/linuxbrew/.linuxbrew/opt/openjdk@21`. The JDK home is `$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home`.
+Expected: `JDK21_HOME=...` printed with a path whose `bin/java` exists. Remember this path for Task 1 Step 4 (`org.gradle.java.home`).
 
 - [ ] **Step 2: Install Android command-line tools (direct download — most reliable on Linux)**
 
@@ -142,9 +145,9 @@ git commit -m "chore: gitignore for android project"
 
 ```bash
 brew install gradle
-gradle wrapper --gradle-version 8.10.2
+JAVA_HOME="$JDK21_HOME" gradle wrapper --gradle-version 8.10.2
 ```
-> `brew install gradle` installs the latest Gradle only to run `wrapper` once; the wrapper itself is pinned to 8.10.2. All later steps use `./gradlew`.
+> `JAVA_HOME` points Gradle at JDK 21 (the system default is JDK 26, which brew's Gradle may refuse). `brew install gradle` installs the latest Gradle only to run `wrapper` once; the wrapper itself is pinned to 8.10.2. All later steps use `./gradlew` (which reads `org.gradle.java.home` from `gradle.properties`).
 
 - [ ] **Step 2: `settings.gradle.kts`**
 
@@ -179,15 +182,15 @@ plugins {
 
 - [ ] **Step 4: `gradle.properties`**
 
-Set `org.gradle.java.home` to the **Linuxbrew** JDK 21 home from Task 0 Step 1 (`$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home`). Example:
+Set `org.gradle.java.home` to the **detected** JDK 21 home from Task 0 Step 1 (the path whose `bin/java` you verified). Example (Linuxbrew `libexec` layout):
 ```properties
 org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
 android.useAndroidX=true
 kotlin.code.style=official
 android.nonTransitiveRClass=true
-org.gradle.java.home=/home/linuxbrew/.linuxbrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
+org.gradle.java.home=/home/linuxbrew/.linuxbrew/opt/openjdk@21/libexec
 ```
-> Replace the path with your verified Step-1 value (`brew --prefix openjdk@21`).
+> Use YOUR verified `JDK21_HOME` value; if your layout is the bundle form, it ends in `.../libexec/openjdk.jdk/Contents/Home`. Verify Gradle can launch it in Step 8 (build will fail clearly if the path is wrong).
 
 - [ ] **Step 5: `app/build.gradle.kts`**
 
@@ -371,12 +374,16 @@ fun DrawSurface(
                                 current = null
                             }
                         }
+                        change.consume()
                     }
                 }
             }
         }
     ) {
         val userInk = Color(0xFF1A1A2E)
+        if (response.isNotEmpty()) {
+            renderAnimated(response, responseProgress, responseInk)
+        }
         val all = strokes + (current?.let { listOf(Stroke(it)) } ?: emptyList())
         all.forEach { stroke ->
             if (stroke.points.size >= 2) {
@@ -389,9 +396,6 @@ fun DrawSurface(
                     style = Stroke(width = 4f, cap = StrokeCap.Round, join = StrokeJoin.Round),
                 )
             }
-        }
-        if (response.isNotEmpty()) {
-            renderAnimated(response, responseProgress, responseInk)
         }
     }
 }
@@ -438,6 +442,7 @@ package com.scribble.riddle.ui
 import android.graphics.PathMeasure
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.nativeCanvas
 
@@ -634,6 +639,7 @@ import androidx.core.content.res.ResourcesCompat
 import com.scribble.riddle.ui.DrawSurface
 import com.scribble.riddle.ui.InkPathFactory
 import com.scribble.riddle.ui.StrokeStore
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -656,6 +662,7 @@ private fun TracerScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val progress by StrokeStore.responseProgress
+    var animJob by remember { mutableStateOf<Job?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
@@ -680,10 +687,12 @@ private fun TracerScreen() {
                 )
                 val n = StrokeStore.responsePaths.size.coerceAtLeast(1)
                 val totalMs = n * PER_GLYPH_MS
-                scope.launch {
-                    val start = System.currentTimeMillis()
+                animJob?.cancel()
+                StrokeStore.responseProgress.value = 0f
+                animJob = scope.launch {
+                    val start = android.os.SystemClock.elapsedRealtime()
                     while (true) {
-                        val t = (System.currentTimeMillis() - start).toFloat() / totalMs
+                        val t = (android.os.SystemClock.elapsedRealtime() - start).toFloat() / totalMs
                         StrokeStore.responseProgress.value = t.coerceIn(0f, 1f)
                         if (t >= 1f) break
                         delay(ANIMATION_TICK_MS)
