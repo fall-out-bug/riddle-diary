@@ -1,0 +1,8 @@
+.git
+.github
+docs
+**/build
+**/.gradle
+**/.idea
+**/*.iml
+jdk21
