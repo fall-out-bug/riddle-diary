@@ -184,6 +184,11 @@ fun DiaryScreen(
                 }
                 allUser.forEach { stroke ->
                     if (stroke.points.size >= 2) {
+                        drawCircle(
+                            color = Color(0xFF1A1A2E),
+                            radius = 5f,
+                            center = androidx.compose.ui.geometry.Offset(stroke.points[0].x, stroke.points[0].y),
+                        )
                         val p = Path()
                         p.moveTo(stroke.points[0].x, stroke.points[0].y)
                         for (i in 1 until stroke.points.size) p.lineTo(stroke.points[i].x, stroke.points[i].y)
