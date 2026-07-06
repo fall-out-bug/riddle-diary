@@ -83,6 +83,10 @@ fun DiaryScreen(
             processing = true
             val turnStrokes = pending.toList()
             pending.clear()
+            if (!InkRecognizer.isModelDownloaded()) {
+                status = "Скачиваю модель…"
+                InkRecognizer.ensureModel()
+            }
             status = "Распознаю…"
             val text = runCatching { InkRecognizer.recognize(turnStrokes) }.getOrDefault("").trim()
             if (text.isBlank()) {
