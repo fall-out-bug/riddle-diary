@@ -1,13 +1,14 @@
 # Riddle Diary — Handwriting Chat for BOOX Note Air5 C
 
-- **Status:** Design v9 (post-review round 8) — pending implementation plan
+- **Status:** Design v10 (post-review round 9) — **all 3 reviewers LGTM** — pending implementation plan
 - **Date:** 2026-07-05
 - **Proof level:** inspected
 - **Target device:** BOOX Note Air5 C
-- **Review:** 3-subagent review over 8 rounds. deepseek + minimax at LGTM; kimi
-  round-8 must-fix = A1 (assistant-message model) + A2 (global glyphIndex across
-  chunks). v9 resolves them: **two-messages-per-turn** (distinct USER and
-  ASSISTANT rows) and a per-assistant-message cumulative `startGlyphIndex`.
+- **Review:** 3-subagent review over 9 rounds → LGTM from deepseek, kimi, minimax.
+  v8 made `DrawSurface` pure-render and `SendOrchestrator` the pipeline owner;
+  v9 adopted two-messages-per-turn + per-response cumulative glyphIndex; v10 added
+  `role` to `createMessage` (kimi M5). Remaining reviewer notes are non-blocking
+  and deferred to the implementation plan.
 
 ---
 
