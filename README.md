@@ -9,6 +9,9 @@ glyph-by-glyph, as if ink were appearing on its own. The conversation accumulate
 down a single continuous notebook.
 
 ![status](https://img.shields.io/badge/status-working%20on%20device-green)
+![license](https://img.shields.io/badge/code-MIT-blue)
+
+![Riddle Diary on BOOX Note Air5 C](screenshot.png)
 
 ## Features
 
@@ -132,3 +135,10 @@ personas / settings screen.
 
 See `docs/superpowers/specs/2026-07-05-riddle-diary-design.md` for the complete
 design and `docs/superpowers/plans/` for the implementation plan.
+
+## License
+
+Code: **MIT** — see [LICENSE](LICENSE).
+The bundled **Caveat** handwriting font is under the SIL Open Font License 1.1
+(`app/src/main/res/raw/caveat_ofl.txt`), separate from the MIT license.
+ML Kit, Compose, OkHttp, etc. retain their respective licenses.
