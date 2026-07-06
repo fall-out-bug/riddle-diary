@@ -25,12 +25,15 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.scribble.riddle.llm.Config
@@ -71,6 +74,16 @@ fun DiaryScreen(
 ) {
     val scope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val datePaint = remember {
+        android.graphics.Paint(responsePaint).apply {
+            textSize = 46f
+            color = Color(0xFF8C6E4A).toArgb()
+            alpha = 200
+        }
+    }
+    val dateStr = remember {
+        java.text.SimpleDateFormat("d MMMM yyyy", java.util.Locale("ru")).format(java.util.Date()) + " г."
+    }
 
     val pending = remember { mutableStateListOf<InkStroke>() }
     val allUser = remember { mutableStateListOf<InkStroke>() }
@@ -202,6 +215,43 @@ fun DiaryScreen(
                         }
                     },
             ) {
+                // --- old-planner page background ---
+                drawRect(color = Color(0xFFF1E3C2))
+                val marginX = 140f
+                val pageH = 2400f
+                var pageTop = 0f
+                var pageIdx = 0
+                while (pageTop < this.size.height) {
+                    drawIntoCanvas { c ->
+                        c.nativeCanvas.drawText(dateStr, marginX, pageTop + 78f, datePaint)
+                    }
+                    var y = pageTop + 116f
+                    while (y < pageTop + pageH - 70f) {
+                        drawLine(
+                            color = Color(0xFFC9B68C),
+                            start = androidx.compose.ui.geometry.Offset(marginX, y),
+                            end = androidx.compose.ui.geometry.Offset(this.size.width - 70f, y),
+                            strokeWidth = 1.3f,
+                        )
+                        y += 92f
+                    }
+                    drawLine(
+                        color = Color(0xFFB26A55),
+                        start = androidx.compose.ui.geometry.Offset(marginX - 34f, pageTop + 70f),
+                        end = androidx.compose.ui.geometry.Offset(marginX - 34f, pageTop + pageH - 50f),
+                        strokeWidth = 2.2f,
+                    )
+                    if (pageIdx > 0) {
+                        drawLine(
+                            color = Color(0xFF8E7A50),
+                            start = androidx.compose.ui.geometry.Offset(70f, pageTop),
+                            end = androidx.compose.ui.geometry.Offset(this.size.width - 70f, pageTop),
+                            strokeWidth = 2.5f,
+                        )
+                    }
+                    pageTop += pageH
+                    pageIdx++
+                }
                 responses.forEach { rg ->
                     renderAnimated(rg.paths, rg.progress, Color(0xFF5A4A2F))
                 }
