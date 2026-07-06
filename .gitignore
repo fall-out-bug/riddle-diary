@@ -7,3 +7,5 @@ local.properties
 captures/
 .cxx/
 app/build/
+.kotlin/
+**/Secrets.kt
