@@ -249,7 +249,7 @@ fun DiaryScreen(
                 drawRect(color = Color.White)
                 val marginX = 150f
                 val pageH = 2400f
-                val ruleColor = Color(0xFFE3DED2)
+                val ruleColor = Color(0xFFA89F8C)
                 var pageTop = 0f
                 var pageIdx = 0
                 while (pageTop < this.size.height) {

@@ -35,7 +35,14 @@ object DiaryStore {
 
     fun save(ctx: Context, diary: StoredDiary) {
         try {
-            file(ctx).writeText(json.encodeToString(StoredDiary.serializer(), diary))
+            val f = file(ctx)
+            val tmp = File(f.parentFile, "diary.json.tmp")
+            tmp.writeText(json.encodeToString(StoredDiary.serializer(), diary))
+            // atomic on the same filesystem — never a half-written file even if killed mid-save
+            if (!tmp.renameTo(f)) {
+                f.delete()
+                tmp.renameTo(f)
+            }
         } catch (e: Exception) {
         }
     }
